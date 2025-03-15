@@ -1,5 +1,64 @@
--- process_assembly.sql
+-- Make sure HTTP extension is loaded
+INSTALL httpfs;
+LOAD httpfs;
+
+-- Download GenBank assembly summary
+CREATE OR REPLACE PROCEDURE download_genbank_assembly() AS
+BEGIN
+    -- Get temporary directory
+    DECLARE tmp_dir VARCHAR;
+    SELECT setup_download_dir() INTO tmp_dir;
+    
+    -- Define file URL
+    DECLARE genbank_url VARCHAR := 'https://ftp.ncbi.nlm.nih.gov/genomes/ASSEMBLY_REPORTS/assembly_summary_genbank.txt';
+    DECLARE output_file VARCHAR := tmp_dir || '/assembly_summary_genbank.txt';
+    
+    -- Show status
+    SELECT 'Downloading GenBank assembly data from ' || genbank_url AS status;
+    
+    -- Create a system table to track downloads if it doesn't exist
+    CREATE TABLE IF NOT EXISTS download_status (
+        file_name VARCHAR,
+        url VARCHAR,
+        status VARCHAR,
+        download_time TIMESTAMP
+    );
+    
+    -- Check if we already downloaded this recently (within 1 day)
+    DECLARE recently_downloaded BOOLEAN;
+    SELECT COUNT(*) > 0 FROM download_status 
+    WHERE file_name = 'assembly_summary_genbank.txt' 
+      AND status = 'complete'
+      AND download_time > CURRENT_TIMESTAMP - INTERVAL 1 DAY
+    INTO recently_downloaded;
+    
+    -- If not recently downloaded, get the file
+    IF NOT recently_downloaded THEN
+        -- Create directory if it doesn't exist
+        CALL system('mkdir -p ' || tmp_dir);
+        
+        -- Download the file using HTTP extension
+        COPY (SELECT * FROM genbank_url)
+        TO output_file;
+        
+        -- Record the download
+        DELETE FROM download_status WHERE file_name = 'assembly_summary_genbank.txt';
+        INSERT INTO download_status VALUES 
+            ('assembly_summary_genbank.txt', genbank_url, 'complete', CURRENT_TIMESTAMP);
+    ELSE
+        SELECT 'Using cached GenBank assembly data (downloaded within the last day)' AS status;
+    END IF;
+END;
+
+-- Execute the download procedure
+CALL download_genbank_assembly();
+
+-- Process assembly data
 DROP TABLE IF EXISTS assembly_summary_genbank;
+
+-- Get temporary directory path
+DECLARE tmp_dir VARCHAR;
+SELECT setup_download_dir() INTO tmp_dir;
 
 CREATE TABLE assembly_summary_genbank AS
 SELECT
@@ -77,7 +136,7 @@ SELECT
     "column37" as pubmed_id -- comma separated IDs
 FROM
     read_csv_auto (
-        'assembly_summary_genbank.txt',
+        tmp_dir || '/assembly_summary_genbank.txt',
         sep = '\t',
         header = false,
         skip = 2
