@@ -79,35 +79,77 @@ def download_file(url, destination):
     """Download a file from a URL to a destination path with progress indication."""
     click.echo(f"Downloading {url}...")
     
-    with requests.get(url, stream=True) as response:
-        response.raise_for_status()
-        total_size = int(response.headers.get('content-length', 0))
+    try:
+        with requests.get(url, stream=True) as response:
+            response.raise_for_status()
+            total_size = int(response.headers.get('content-length', 0))
+            
+            with open(destination, 'wb') as f:
+                with click.progressbar(length=total_size, label=f"Downloading {os.path.basename(url)}") as bar:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        if chunk:
+                            f.write(chunk)
+                            bar.update(len(chunk))
         
-        with open(destination, 'wb') as f:
-            with click.progressbar(length=total_size, label=f"Downloading {os.path.basename(url)}") as bar:
-                for chunk in response.iter_content(chunk_size=8192):
-                    if chunk:
-                        f.write(chunk)
-                        bar.update(len(chunk))
-    
-    click.echo(f"Downloaded to {destination}")
-    return destination
+        # Verify the file was downloaded
+        if os.path.exists(destination):
+            file_size = os.path.getsize(destination)
+            click.echo(f"Downloaded to {destination} ({file_size} bytes)")
+            
+            # For text files, check first few lines
+            if destination.endswith('.txt'):
+                with open(destination, 'r', errors='ignore') as f:
+                    first_line = f.readline().strip()
+                click.echo(f"First line: {first_line[:80]}...")
+            
+            return destination
+        else:
+            click.echo(f"ERROR: File was not created at {destination}", err=True)
+            return None
+    except Exception as e:
+        click.echo(f"Error downloading {url}: {e}", err=True)
+        return None
 
 
 def extract_from_tarfile(tar_path, file_to_extract, destination_dir):
     """Extract a specific file from a tar archive."""
     click.echo(f"Extracting {file_to_extract} from {tar_path}...")
     
-    with tarfile.open(tar_path, 'r:gz') as tar:
-        # Find the file in the archive
-        try:
-            member = tar.getmember(file_to_extract)
-            tar.extract(member, path=destination_dir)
-            click.echo(f"Extracted to {os.path.join(destination_dir, file_to_extract)}")
-            return os.path.join(destination_dir, file_to_extract)
-        except KeyError:
-            click.echo(f"File {file_to_extract} not found in archive", err=True)
-            return None
+    try:
+        with tarfile.open(tar_path, 'r:gz') as tar:
+            # Find the file in the archive
+            try:
+                # List some files in the archive to debug
+                members = tar.getnames()
+                click.echo(f"Archive contains {len(members)} files")
+                if len(members) > 0:
+                    click.echo(f"First few files: {', '.join(members[:5])}")
+                
+                # Look for the file
+                member = tar.getmember(file_to_extract)
+                tar.extract(member, path=destination_dir)
+                extracted_file = os.path.join(destination_dir, file_to_extract)
+                
+                if os.path.exists(extracted_file):
+                    file_size = os.path.getsize(extracted_file)
+                    click.echo(f"Extracted to {extracted_file} ({file_size} bytes)")
+                    
+                    # For text files, check first few lines
+                    if extracted_file.endswith('.dmp') or extracted_file.endswith('.txt'):
+                        with open(extracted_file, 'r', errors='ignore') as f:
+                            first_line = f.readline().strip()
+                        click.echo(f"First line: {first_line[:80]}...")
+                    
+                    return extracted_file
+                else:
+                    click.echo(f"Error: Extraction succeeded but file {extracted_file} doesn't exist", err=True)
+                    return None
+            except KeyError:
+                click.echo(f"File {file_to_extract} not found in archive", err=True)
+                return None
+    except Exception as e:
+        click.echo(f"Error extracting from {tar_path}: {e}", err=True)
+        return None
 
 
 @cli.command()
@@ -143,10 +185,18 @@ def ncbi(db_path, force, launch_ui, data_dir):
     # Download taxonomy data
     taxonomy_url = "https://ftp.ncbi.nlm.nih.gov/pub/taxonomy/new_taxdump/new_taxdump.tar.gz"
     taxonomy_tar = os.path.join(data_dir, "new_taxdump.tar.gz")
-    download_file(taxonomy_url, taxonomy_tar)
+    taxonomy_tar = download_file(taxonomy_url, taxonomy_tar)
+    
+    if not taxonomy_tar or not os.path.exists(taxonomy_tar):
+        click.echo("Failed to download taxonomy data. Aborting.", err=True)
+        sys.exit(1)
     
     # Extract needed taxonomy file
     taxonomy_file = extract_from_tarfile(taxonomy_tar, "rankedlineage.dmp", data_dir)
+    
+    if not taxonomy_file or not os.path.exists(taxonomy_file):
+        click.echo("Failed to extract taxonomy file. Aborting.", err=True)
+        sys.exit(1)
     
     # Download assembly summaries
     genbank_url = "https://ftp.ncbi.nlm.nih.gov/genomes/ASSEMBLY_REPORTS/assembly_summary_genbank.txt"
@@ -155,8 +205,32 @@ def ncbi(db_path, force, launch_ui, data_dir):
     genbank_file = os.path.join(data_dir, "assembly_summary_genbank.txt")
     refseq_file = os.path.join(data_dir, "assembly_summary_refseq.txt")
     
-    download_file(genbank_url, genbank_file)
-    download_file(refseq_url, refseq_file)
+    genbank_file = download_file(genbank_url, genbank_file)
+    refseq_file = download_file(refseq_url, refseq_file)
+    
+    if not genbank_file or not os.path.exists(genbank_file):
+        click.echo("Failed to download GenBank assembly data. Aborting.", err=True)
+        sys.exit(1)
+    
+    if not refseq_file or not os.path.exists(refseq_file):
+        click.echo("Failed to download RefSeq assembly data. Aborting.", err=True) 
+        sys.exit(1)
+        
+    # Verify all files exist before proceeding
+    required_files = [
+        os.path.join(data_dir, "rankedlineage.dmp"),
+        os.path.join(data_dir, "assembly_summary_genbank.txt"),
+        os.path.join(data_dir, "assembly_summary_refseq.txt")
+    ]
+    
+    for file_path in required_files:
+        if not os.path.exists(file_path):
+            click.echo(f"Required file {file_path} is missing. Aborting.", err=True)
+            sys.exit(1)
+        else:
+            click.echo(f"Verified file exists: {file_path} ({os.path.getsize(file_path)} bytes)")
+    
+    click.echo("All required data files are ready for processing.")
     
     # Access SQL files from package resources
     try:
@@ -181,8 +255,7 @@ def ncbi(db_path, force, launch_ui, data_dir):
     # Load httpfs extension
     conn.execute("INSTALL httpfs; LOAD httpfs;")
     
-    # Set up the working directory for SQL files
-    conn.execute(f"SET temp_directory = '{data_dir}'")
+    # We'll handle paths directly in Python, removing this line
     
     # Define the order of SQL files to run
     sql_files = ['init.sql', 'enums.sql', 'load_taxonomy.sql', 'load_assembly_genbank.sql', 'load_assembly_refseq.sql']
@@ -199,16 +272,43 @@ def ncbi(db_path, force, launch_ui, data_dir):
                 query = importlib.resources.read_text('bioduck.sql.ncbi', sql_file)
 
             click.echo(f"Running {sql_file}...")
+            # Replace file references with full paths
+            modified_query = query
+            
+            # Replace file references with full paths
+            if 'rankedlineage.dmp' in modified_query:
+                taxonomy_path = os.path.join(data_dir, 'rankedlineage.dmp')
+                modified_query = modified_query.replace("'rankedlineage.dmp'", f"'{taxonomy_path}'")
+            
+            if 'assembly_summary_genbank.txt' in modified_query:
+                genbank_path = os.path.join(data_dir, 'assembly_summary_genbank.txt')
+                modified_query = modified_query.replace("'assembly_summary_genbank.txt'", f"'{genbank_path}'")
+            
+            if 'assembly_summary_refseq.txt' in modified_query:
+                refseq_path = os.path.join(data_dir, 'assembly_summary_refseq.txt')
+                modified_query = modified_query.replace("'assembly_summary_refseq.txt'", f"'{refseq_path}'")
+            
+            # Execute the modified query with more logging for debugging
             try:
-                # For init.sql, we just need to initialize the database setup
-                if sql_file == 'init.sql':
-                    conn.execute(query)
-                else:
-                    # For data loading files, run them with the current working directory set to data_dir
-                    conn.execute(f"SET working_directory = '{data_dir}'")
-                    conn.execute(query)
+                if sql_file in ['load_taxonomy.sql', 'load_assembly_genbank.sql', 'load_assembly_refseq.sql']:
+                    click.echo(f"Using data files from: {data_dir}")
+                conn.execute(modified_query)
             except Exception as e:
                 click.echo(f"Error executing {sql_file}: {e}", err=True)
+                if 'No such file or directory' in str(e):
+                    # Log the actual paths being used
+                    if 'rankedlineage.dmp' in modified_query:
+                        click.echo(f"Looking for taxonomy file at: {os.path.join(data_dir, 'rankedlineage.dmp')}")
+                        if not os.path.exists(os.path.join(data_dir, 'rankedlineage.dmp')):
+                            click.echo("WARNING: Taxonomy file does not exist!")
+                    if 'assembly_summary_genbank.txt' in modified_query:
+                        click.echo(f"Looking for GenBank file at: {os.path.join(data_dir, 'assembly_summary_genbank.txt')}")
+                        if not os.path.exists(os.path.join(data_dir, 'assembly_summary_genbank.txt')):
+                            click.echo("WARNING: GenBank file does not exist!")
+                    if 'assembly_summary_refseq.txt' in modified_query:
+                        click.echo(f"Looking for RefSeq file at: {os.path.join(data_dir, 'assembly_summary_refseq.txt')}")
+                        if not os.path.exists(os.path.join(data_dir, 'assembly_summary_refseq.txt')):
+                            click.echo("WARNING: RefSeq file does not exist!")
         except FileNotFoundError:
             click.echo(f"Warning: SQL file {sql_file} not found in package", err=True)
 
