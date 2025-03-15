@@ -20,10 +20,10 @@ def run(sql_file, db, output):
     """Run a SQL file against a DuckDB database."""
     with open(sql_file, 'r') as f:
         query = f.read()
-    
+
     conn = duckdb.connect(db)
     result = conn.execute(query)
-    
+
     if output:
         result.df().to_csv(output, index=False)
         click.echo(f"Results saved to {output}")
@@ -38,7 +38,7 @@ def ui(db, sql_dir):
     """Run DuckDB UI after optionally initializing with SQL files."""
     if os.path.exists(sql_dir):
         conn = duckdb.connect(db)
-        
+
         # Run all SQL files in the specified directory
         sql_files = [f for f in os.listdir(sql_dir) if f.endswith('.sql')]
         for sql_file in sorted(sql_files):
@@ -47,7 +47,7 @@ def ui(db, sql_dir):
                 query = f.read()
             conn.execute(query)
         conn.close()
-    
+
     # Launch DuckDB UI
     os.system(f"duckdb -ui {db}")
 
@@ -59,15 +59,15 @@ def create(name, dir):
     """Create a new SQL file with the given name."""
     if not os.path.exists(dir):
         os.makedirs(dir)
-    
+
     file_path = os.path.join(dir, f"{name}.sql")
     if os.path.exists(file_path):
         click.echo(f"File {file_path} already exists.")
         return
-    
+
     with open(file_path, 'w') as f:
         f.write(f"-- {name}.sql\n\n")
-    
+
     click.echo(f"Created SQL file: {file_path}")
 
 
@@ -80,17 +80,23 @@ def ncbi(db_path, force, launch_ui):
     # Resolve path and create parent directories if needed
     db_path = os.path.expanduser(db_path)
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
-    
+
     # Check if database already exists
     db_exists = os.path.exists(db_path) and os.path.getsize(db_path) > 0
-    
-    if db_exists and not force:
-        click.echo(f"Database already exists at {db_path}")
-        if launch_ui:
-            click.echo("Launching DuckDB UI...")
-            os.system(f"duckdb -ui {db_path}")
-        return
-    
+    click.echo(f"DB Exists {db_exists}")
+
+    if db_exists:
+        if force:
+            click.echo(f"Removing existing database at {db_path}")
+            os.remove(db_path)
+        else:
+            click.echo(f"Database already exists at {db_path}")
+            if launch_ui:
+                click.echo("Launching DuckDB UI...")
+                os.system(f"duckdb -ui {db_path}")
+            return
+
+
     # Access SQL files from package resources
     try:
         # For Python 3.9+
@@ -102,18 +108,20 @@ def ncbi(db_path, force, launch_ui):
             sql_dir_exists = importlib.resources.is_resource('bioduck.sql.ncbi', '__init__.py')
         except (ImportError, FileNotFoundError):
             sql_dir_exists = False
-    
+
     if not sql_dir_exists:
         click.echo("Error: SQL directory not found in package", err=True)
         sys.exit(1)
-    
+
     # Create/connect to the database
     click.echo(f"Setting up NCBI database at {db_path}...")
     conn = duckdb.connect(db_path)
-    
+
     # Define the order of SQL files to run
-    sql_files = ['init.sql', 'enums.sql', 'load_taxonomy.sql', 'load_assembly_genbank.sql', 'load_assembly_refseq.sql']
-    
+    # sql_files = ['init.sql', 'enums.sql', 'load_taxonomy.sql', 'load_assembly_genbank.sql', 'load_assembly_refseq.sql']
+    sql_files = ['enums.sql', 'load_taxonomy.sql', 'load_assembly_genbank.sql', 'load_assembly_refseq.sql']
+
+
     # Execute each SQL file in order
     for sql_file in sql_files:
         try:
@@ -124,7 +132,7 @@ def ncbi(db_path, force, launch_ui):
             except (AttributeError, NameError):
                 # Fallback for older Python versions
                 query = importlib.resources.read_text('bioduck.sql.ncbi', sql_file)
-            
+
             click.echo(f"Running {sql_file}...")
             try:
                 conn.execute(query)
@@ -132,10 +140,10 @@ def ncbi(db_path, force, launch_ui):
                 click.echo(f"Error executing {sql_file}: {e}", err=True)
         except FileNotFoundError:
             click.echo(f"Warning: SQL file {sql_file} not found in package", err=True)
-    
+
     conn.close()
     click.echo(f"NCBI database setup complete at {db_path}")
-    
+
     # Launch UI if requested
     if launch_ui:
         click.echo("Launching DuckDB UI...")
