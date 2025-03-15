@@ -12,6 +12,15 @@ dependencies = [
 [project.scripts]
 bioduck = "bioduck.main:cli"
 
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"bioduck" = ["sql/**/*.sql"]
+
+[tool.setuptools.exclude-package-data]
+"*" = ["*.pyc", "__pycache__", "*.pyo"]
+
 [build-system]
 requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
