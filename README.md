@@ -83,9 +83,11 @@ This will:
    - GenBank assembly data 
    - RefSeq assembly data
    
-The database will automatically download the required files from NCBI FTP servers:
-- Downloads are cached for 1 day by default to avoid repeated downloads
-- All data fetching and processing happens directly in DuckDB SQL
+The command will automatically:
+1. Download required files from NCBI FTP servers with progress indicators
+2. Extract necessary data from compressed archives
+3. Process and load the data into a DuckDB database
+4. Files are stored in `~/.bioduck/data` by default for reuse
 
 ### Accessing an Existing NCBI Database
 
@@ -114,8 +116,12 @@ To force recreation of the database even if it exists:
 bioduck ncbi --force
 ```
 
-### Specify Custom Database Location
+### Specify Custom Locations
 
 ```bash
+# Custom database location
 bioduck ncbi --db-path /path/to/custom/ncbi.db
+
+# Custom data directory for downloaded files
+bioduck ncbi --data-dir /path/to/store/downloaded/data
 ```

@@ -3,6 +3,10 @@ import sys
 import click
 import duckdb
 import importlib.resources
+import requests
+import shutil
+import tempfile
+import tarfile
 from pathlib import Path
 
 
@@ -71,19 +75,56 @@ def create(name, dir):
     click.echo(f"Created SQL file: {file_path}")
 
 
+def download_file(url, destination):
+    """Download a file from a URL to a destination path with progress indication."""
+    click.echo(f"Downloading {url}...")
+    
+    with requests.get(url, stream=True) as response:
+        response.raise_for_status()
+        total_size = int(response.headers.get('content-length', 0))
+        
+        with open(destination, 'wb') as f:
+            with click.progressbar(length=total_size, label=f"Downloading {os.path.basename(url)}") as bar:
+                for chunk in response.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+                        bar.update(len(chunk))
+    
+    click.echo(f"Downloaded to {destination}")
+    return destination
+
+
+def extract_from_tarfile(tar_path, file_to_extract, destination_dir):
+    """Extract a specific file from a tar archive."""
+    click.echo(f"Extracting {file_to_extract} from {tar_path}...")
+    
+    with tarfile.open(tar_path, 'r:gz') as tar:
+        # Find the file in the archive
+        try:
+            member = tar.getmember(file_to_extract)
+            tar.extract(member, path=destination_dir)
+            click.echo(f"Extracted to {os.path.join(destination_dir, file_to_extract)}")
+            return os.path.join(destination_dir, file_to_extract)
+        except KeyError:
+            click.echo(f"File {file_to_extract} not found in archive", err=True)
+            return None
+
+
 @cli.command()
 @click.option('--db-path', '-d', default='~/.bioduck/ncbi.db', help='Path to save/load the NCBI database.')
 @click.option('--force', '-f', is_flag=True, help='Force recreation of database even if it exists.')
 @click.option('--launch-ui', '-u', is_flag=True, help='Launch DuckDB UI after setup.')
-def ncbi(db_path, force, launch_ui):
+@click.option('--data-dir', default='~/.bioduck/data', help='Directory to store downloaded data files.')
+def ncbi(db_path, force, launch_ui, data_dir):
     """Set up an NCBI database using the included SQL scripts."""
-    # Resolve path and create parent directories if needed
+    # Resolve paths and create directories
     db_path = os.path.expanduser(db_path)
+    data_dir = os.path.expanduser(data_dir)
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
+    os.makedirs(data_dir, exist_ok=True)
 
     # Check if database already exists
     db_exists = os.path.exists(db_path) and os.path.getsize(db_path) > 0
-    click.echo(f"DB Exists {db_exists}")
 
     if db_exists:
         if force:
@@ -96,7 +137,27 @@ def ncbi(db_path, force, launch_ui):
                 os.system(f"duckdb -ui {db_path}")
             return
 
-
+    # Download necessary files
+    click.echo("Downloading required NCBI data files...")
+    
+    # Download taxonomy data
+    taxonomy_url = "https://ftp.ncbi.nlm.nih.gov/pub/taxonomy/new_taxdump/new_taxdump.tar.gz"
+    taxonomy_tar = os.path.join(data_dir, "new_taxdump.tar.gz")
+    download_file(taxonomy_url, taxonomy_tar)
+    
+    # Extract needed taxonomy file
+    taxonomy_file = extract_from_tarfile(taxonomy_tar, "rankedlineage.dmp", data_dir)
+    
+    # Download assembly summaries
+    genbank_url = "https://ftp.ncbi.nlm.nih.gov/genomes/ASSEMBLY_REPORTS/assembly_summary_genbank.txt"
+    refseq_url = "https://ftp.ncbi.nlm.nih.gov/genomes/ASSEMBLY_REPORTS/assembly_summary_refseq.txt"
+    
+    genbank_file = os.path.join(data_dir, "assembly_summary_genbank.txt")
+    refseq_file = os.path.join(data_dir, "assembly_summary_refseq.txt")
+    
+    download_file(genbank_url, genbank_file)
+    download_file(refseq_url, refseq_file)
+    
     # Access SQL files from package resources
     try:
         # For Python 3.9+
@@ -116,11 +177,15 @@ def ncbi(db_path, force, launch_ui):
     # Create/connect to the database
     click.echo(f"Setting up NCBI database at {db_path}...")
     conn = duckdb.connect(db_path)
-
+    
+    # Load httpfs extension
+    conn.execute("INSTALL httpfs; LOAD httpfs;")
+    
+    # Set up the working directory for SQL files
+    conn.execute(f"SET temp_directory = '{data_dir}'")
+    
     # Define the order of SQL files to run
-    # sql_files = ['init.sql', 'enums.sql', 'load_taxonomy.sql', 'load_assembly_genbank.sql', 'load_assembly_refseq.sql']
-    sql_files = ['enums.sql', 'load_taxonomy.sql', 'load_assembly_genbank.sql', 'load_assembly_refseq.sql']
-
+    sql_files = ['init.sql', 'enums.sql', 'load_taxonomy.sql', 'load_assembly_genbank.sql', 'load_assembly_refseq.sql']
 
     # Execute each SQL file in order
     for sql_file in sql_files:
@@ -135,7 +200,13 @@ def ncbi(db_path, force, launch_ui):
 
             click.echo(f"Running {sql_file}...")
             try:
-                conn.execute(query)
+                # For init.sql, we just need to initialize the database setup
+                if sql_file == 'init.sql':
+                    conn.execute(query)
+                else:
+                    # For data loading files, run them with the current working directory set to data_dir
+                    conn.execute(f"SET working_directory = '{data_dir}'")
+                    conn.execute(query)
             except Exception as e:
                 click.echo(f"Error executing {sql_file}: {e}", err=True)
         except FileNotFoundError:
