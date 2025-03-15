@@ -1,0 +1,17 @@
+[project]
+name = "bioduck"
+version = "0.1.0"
+description = "A CLI tool for running SQL files against DuckDB and exploring data interactively"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "click>=8.1.8",
+    "duckdb>=1.2.1",
+]
+
+[project.scripts]
+bioduck = "bioduck.main:cli"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
